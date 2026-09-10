@@ -2,6 +2,8 @@
 mod helpers;
 
 use {
+    anchor_lang::{InstructionData, ToAccountMetas},
+    anchor_lang::solana_program::instruction::Instruction,
     solana_keypair::Keypair,
     solana_message::{Message, VersionedMessage},
     solana_signer::Signer,
@@ -197,6 +199,93 @@ fn test_transfer_hook_per_owner_rate_limit() {
     assert!(
         res.is_ok(),
         "Owner 2 transfer should succeed: {:?}",
+        res.err()
+    );
+}
+
+#[test]
+fn test_transfer_through_token_mover() {
+    let (mut svm, payer, program_id) = setup();
+    let mint = Keypair::new();
+
+    setup_mint_and_extra_metas(&mut svm, &payer, &mint, &program_id);
+
+    let recipient = Keypair::new();
+    svm.airdrop(&recipient.pubkey(), 1_000_000_000).unwrap();
+
+    let source_ata = create_ata(
+        &mut svm,
+        &payer,
+        &payer.pubkey(),
+        &mint.pubkey(),
+    );
+
+    let dest_ata = create_ata(
+        &mut svm,
+        &payer,
+        &recipient.pubkey(),
+        &mint.pubkey(),
+    );
+
+    mint_tokens(
+        &mut svm,
+        &payer,
+        &mint.pubkey(),
+        &source_ata,
+        1_000_101,
+    );
+
+    // Build the normal Token-2022 transfer instruction first.
+    // We use it only to obtain the hook's remaining accounts.
+    let hook_ix = build_transfer_with_hook_ix(
+        &source_ata,
+        &dest_ata,
+        &mint.pubkey(),
+        &payer.pubkey(),
+        &program_id,
+        100,
+        9,
+    );
+
+    // Build the instruction that calls the token-mover program.
+    let mut transfer_ix = Instruction {
+        program_id: token_mover::id(),
+        accounts: token_mover::accounts::TransferWithHook {
+            owner: payer.pubkey(),
+            source_token: source_ata,
+            mint: mint.pubkey(),
+            destination_token: dest_ata,
+            token_program: anchor_spl::token_2022::ID,
+        }
+        .to_account_metas(None),
+        data: token_mover::instruction::TransferWithHook { amount: 100 }.data(),
+    };
+
+    // The token-mover program needs the hook program and
+    // the hook's extra accounts.
+    transfer_ix.accounts.push(hook_ix.accounts[4].clone());
+    transfer_ix.accounts.push(hook_ix.accounts[5].clone());
+    transfer_ix.accounts.push(hook_ix.accounts[6].clone());
+
+    let blockhash = svm.latest_blockhash();
+
+    let msg = Message::new_with_blockhash(
+        &[transfer_ix],
+        Some(&payer.pubkey()),
+        &blockhash,
+    );
+
+    let tx = VersionedTransaction::try_new(
+        VersionedMessage::Legacy(msg),
+        &[&payer],
+    )
+    .unwrap();
+
+    let res = svm.send_transaction(tx);
+
+    assert!(
+        res.is_ok(),
+        "Transfer through token-mover should succeed: {:?}",
         res.err()
     );
 }
