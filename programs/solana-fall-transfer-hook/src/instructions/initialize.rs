@@ -7,6 +7,9 @@ use crate::{ANCHOR_DISCRIMINATOR_SIZE, RateLimit, error::ErrorCode};
 pub struct Initialize<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
+
+    pub mint: InterfaceAccount<'info, Mint>,
+
     #[account(
         init,
         payer = payer,
@@ -17,6 +20,7 @@ pub struct Initialize<'info> {
         space = ANCHOR_DISCRIMINATOR_SIZE + RateLimit::INIT_SPACE,
     )]
     pub rate_limit: Account<'info, RateLimit>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -25,6 +29,12 @@ pub fn handler(ctx: Context<Initialize>) -> Result<()> {
     // Consider saving the mint in the RateLimit struct if needed for future use.
 
     // Initialize the rate limit account with the authority, mint, max amount, and window start timestamp
+    require_keys_eq!(
+        *ctx.accounts.mint.to_account_info().owner,
+        token_2022::ID,
+        ErrorCode::InvalidMint
+    );
+
     ctx.accounts.rate_limit.set_inner(RateLimit {
         authority: ctx.accounts.payer.key(),
         max_amount: RateLimit::MAX_AMOUNT,
